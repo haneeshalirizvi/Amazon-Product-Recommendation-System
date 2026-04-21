@@ -1,114 +1,124 @@
 import findspark
-
 findspark.init("C:/spark")
-from kafka import KafkaConsumer
+
 import json
-from flask import Flask,render_template ,request
+from kafka import KafkaConsumer
+from flask import Flask, render_template
 from flask_pymongo import PyMongo
+
 from pyspark.sql import SparkSession
-from pyspark.sql import SparkSession
-from pyspark.sql.functions import *
-from pyspark.sql.types import *
-from pyspark.ml.feature import StringIndexerModel
-from pyspark.ml.feature import StringIndexer
+from pyspark.sql.functions import col, lit
+from pyspark.ml.feature import StringIndexerModel, IndexToString
 from pyspark.ml.recommendation import ALSModel
 
-#"B000068O4E"
-
+# ------------------ Flask Setup ------------------
 app = Flask(__name__)
 app.config["MONGO_URI"] = "mongodb://localhost:27017/flask"
-mongo = PyMongo(app)
+db = PyMongo(app)
+
+# ------------------ Kafka Consumer ------------------
+kafka_consumer = KafkaConsumer(
+    'asins',
+    bootstrap_servers=['localhost:9092'],
+    auto_offset_reset='latest',
+    enable_auto_commit=True,
+    group_id='recommendation-group',
+    value_deserializer=lambda msg: json.loads(msg.decode('utf-8'))
+)
+
+# ------------------ Spark Session ------------------
+def create_spark_session():
+    return SparkSession.builder \
+        .appName("ALS Recommendation Engine") \
+        .config("spark.executor.memory", "8g") \
+        .config("spark.driver.memory", "8g") \
+        .config("spark.jars.packages",
+                "org.mongodb.spark:mongo-spark-connector_2.12:3.0.1") \
+        .getOrCreate()
 
 
+# ------------------ Recommendation Logic ------------------
+def generate_recommendations(input_asin):
+    spark = create_spark_session()
 
-# Initialize Kafka consumer
-consumer = KafkaConsumer('asins', bootstrap_servers=['localhost:9092'],
-                         auto_offset_reset='latest',
-                         enable_auto_commit=True,
-                         group_id='my-group',
-                         value_deserializer=lambda x:
-                         json.loads(x.decode('utf-8')))
+    # Load temporary dataset
+    data = spark.read.json("C:/Users/Mubashir/Desktop/Consumer/zource/Temp.json")
 
+    # Load trained models
+    user_indexer = StringIndexerModel.load(
+        "C:/Users/Mubashir/Desktop/Consumer/zource/reviewer_indexer"
+    ).setHandleInvalid("keep")
 
-@app.route('/')
-def get_recommendations():
-    for message in consumer:
-        output = message.value['input']
-        print(output)
-        break
-    spark = SparkSession.builder \
-    .appName("Amazon Recommendation Model with ALS") \
-    .config("spark.executor.memory", "8g") \
-    .config("spark.driver.memory", "8g") \
-    .config("spark.jars.packages", "org.mongodb.spark:mongo-spark-connector_2.12:3.0.1") \
-    .getOrCreate()
-    df_s = spark.read.json("C:/Users/Mubashir/Desktop/Consumer/zource/Temp.json") 
-    #df_s.show()
-    reviewer_indexer = StringIndexer(inputCol="reviewerID", outputCol="reviewer_index").fit(df_s)
-    asin_indexer = StringIndexer(inputCol="asin", outputCol="asin_index").fit(df_s)
-    overall_indexer = StringIndexer(inputCol="overall", outputCol="overall_index").fit(df_s)
-    indexed_data = reviewer_indexer.transform(df_s)
-    indexed_data = asin_indexer.transform(indexed_data)
-    indexed_data = overall_indexer.transform(indexed_data)
+    item_indexer = StringIndexerModel.load(
+        "C:/Users/Mubashir/Desktop/Consumer/zource/asin_indexer"
+    ).setHandleInvalid("keep")
 
-    # Load the saved indexer and ALS models
-    reviewer_indexer = StringIndexerModel.load("C:/Users/Mubashir/Desktop/Consumer/zource/reviewer_indexer").setHandleInvalid("keep")
-    asin_indexer = StringIndexerModel.load("C:/Users/Mubashir/Desktop/Consumer/zource/asin_indexer").setHandleInvalid("keep")
-    model = ALSModel.load("C:/Users/Mubashir/Desktop/Consumer/zource/als_modelFinal")
+    als_model = ALSModel.load(
+        "C:/Users/Mubashir/Desktop/Consumer/zource/als_modelFinal"
+    )
 
-    input_asin = output
-    print(input_asin)
-    # Convert the input ASIN to its corresponding index
-    input_asin_index = asin_indexer.transform(
-        spark.createDataFrame([(input_asin,)] * indexed_data.count(), ["asin"])
+    # Transform dataset
+    indexed_df = user_indexer.transform(data)
+    indexed_df = item_indexer.transform(indexed_df)
+
+    # Convert input ASIN → index
+    asin_index_value = item_indexer.transform(
+        spark.createDataFrame([(input_asin,)], ["asin"])
     ).select("asin_index").collect()[0][0]
-    #print("Yellow")
 
-    # Make predictions for all the items in the dataset
-    all_items = indexed_data.select("asin_index").distinct()
-    predictions = model.transform(all_items.withColumn("reviewer_index", lit(input_asin_index)))
-    #predictions.show()
+    # Get all unique items
+    items_df = indexed_df.select("asin_index").distinct()
 
-    from pyspark.ml.feature import IndexToString
+    # Predict scores
+    predictions_df = als_model.transform(
+        items_df.withColumn("reviewer_index", lit(asin_index_value))
+    )
 
-    # Extract the asin_index and prediction columns from the predictions dataframe
-    predicted_asins = predictions.select("asin_index", "prediction")
+    # Convert indices back to ASIN
+    converter = IndexToString(
+        inputCol="asin_index",
+        outputCol="asin",
+        labels=item_indexer.labels
+    )
 
-    # Convert the asin_index values to asin strings
-    converter = IndexToString(inputCol="asin_index", outputCol="asin", labels=asin_indexer.labels)
-    predicted_asins = converter.transform(predicted_asins).select("asin")
+    final_predictions = converter.transform(predictions_df)
 
-    # Show the resulting asin values
-   # predicted_asins.show()
+    # Get top 3 recommendations
+    top_items = final_predictions.orderBy(
+        col("prediction").desc()
+    ).limit(3)
 
-    predicted_asins.orderBy(col("prediction").desc()).limit(3).show()
+    asin_list = [row["asin"] for row in top_items.collect()]
 
-
-    top_asins = predicted_asins.limit(3).rdd.map(lambda x: x[0]).collect()
-
-    # Concatenate the ASINs into a comma-separated string
-    asins_string = ", ".join(top_asins)
-   # print(type(asins_string))
-
-    # Print the string
-    #print(asins_string)
-    mongo.db.userid.insert_one({
-        "asin": input_asin,
-        "Recommendations": asins_string,
-    })
-    
-     
-    #return asins_string
-    return render_template('consumer.html', asin=asins_string)
-   # return asins_string
+    return asin_list
 
 
-
+# ------------------ Routes ------------------
 @app.route('/')
-def index():
+def recommend():
+    # Read one message from Kafka
+    for msg in kafka_consumer:
+        user_input = msg.value['input']
+        break
+
+    recommendations = generate_recommendations(user_input)
+
+    result_string = ", ".join(recommendations)
+
+    # Store in MongoDB
+    db.db.userid.insert_one({
+        "asin": user_input,
+        "recommendations": result_string
+    })
+
+    return render_template('consumer.html', asin=result_string)
+
+
+@app.route('/home')
+def home():
     return render_template('consumer.html')
 
 
-
+# ------------------ Run App ------------------
 if __name__ == '__main__':
-    app.run()
+    app.run(debug=True)

@@ -1,33 +1,63 @@
+echo Checking environment...
+if not exist "%VENV%" (
+    echo Virtual environment not found!
+    pause
+    exit /b
+)
 @echo off
 setlocal
-echo Starting ENV.
 
-echo REM SET the virtual environment
-set VIRTUAL_ENV=D:\i211764_i211723_i212687\myenv
+echo ===============================
+echo   Starting Recommendation System
+echo ===============================
 
-echo REM Activate the virtual environment
-call %VIRTUAL_ENV%\Scripts\activate
+REM --------- Configuration ---------
+set BASE_DIR=D:\i211764_i211723_i212687
+set VENV=%BASE_DIR%\myenv
+set KAFKA_DIR=%BASE_DIR%\kafka
+set PRODUCER=%BASE_DIR%\producer\producer.py
+set CONSUMER=%BASE_DIR%\consumer\consumer.py
 
-echo REM Start Zookeeper
-start "Start Kafka" D:\i211764_i211723_i212687\kafka\bin\windows\zookeeper-server-start.bat D:\i211764_i211723_i212687\kafka\config\zookeeper.properties
-ping 127.0.0.1 -n 20 > nul
-echo  Start Kafka
-start "Start Kafka" D:\i211764_i211723_i212687\kafka\bin\windows\kafka-server-start.bat D:\i211764_i211723_i212687\kafka\config\server.properties
+REM --------- Activate Virtual Env ---------
+echo Activating virtual environment...
+call %VENV%\Scripts\activate
 
-echo Wait for Kafka to start with Zookeeper
-ping 127.0.0.1 -n 10 > nul
+REM --------- Start Zookeeper ---------
+echo Starting Zookeeper...
+start "Zookeeper" %KAFKA_DIR%\bin\windows\zookeeper-server-start.bat %KAFKA_DIR%\config\zookeeper.properties
 
+REM Wait for Zookeeper
+timeout /t 10 > nul
 
-echo Start your producer file
-start "Start producer" D:\i211764_i211723_i212687\myenv\Scripts\python.exe D:\i211764_i211723_i212687\producer\producer.py
-ping 127.0.0.1 -n 5 > nul
+REM --------- Start Kafka ---------
+echo Starting Kafka server...
+start "Kafka Server" %KAFKA_DIR%\bin\windows\kafka-server-start.bat %KAFKA_DIR%\config\server.properties
 
-echo Wait for the Flask server of Producer
-start "Wait for the Flask server of Producer" http://127.0.0.1:8080/
-ping 127.0.0.1 -n 20 > nul
-echo Start consumer
-start "Start consumer" D:\i211764_i211723_i212687\myenv\Scripts\python.exe D:\i211764_i211723_i212687\consumer\consumer.py
+REM Wait for Kafka
+timeout /t 10 > nul
 
-ping 127.0.0.1 -n 8 > nul
-echo Open the browser to localhost:5000 of Consumer
-start "Open the browser to localhost:5000 of Consumer" http://127.0.0.1:5000/
+REM --------- Start Producer ---------
+echo Launching Producer...
+start "Producer Service" %VENV%\Scripts\python.exe %PRODUCER%
+
+REM Wait before opening producer UI
+timeout /t 5 > nul
+
+echo Opening Producer UI...
+start http://127.0.0.1:8080/
+
+REM --------- Start Consumer ---------
+echo Launching Consumer...
+start "Consumer Service" %VENV%\Scripts\python.exe %CONSUMER%
+
+REM Wait before opening consumer UI
+timeout /t 5 > nul
+
+echo Opening Recommendation UI...
+start http://127.0.0.1:5000/
+
+echo ===============================
+echo   System Started Successfully
+echo ===============================
+
+pause
