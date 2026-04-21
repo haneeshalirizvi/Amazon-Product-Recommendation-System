@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Recommended products</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='output_styles.css') }}">
+</head>
+<body>
+  <div class="container">
+    <div class="right"></div>
+    <div class="left">
+      <div class="header">
+        <h2 class="animation a1">Recommended products</h2>
+        <h3 class="animation a2">Here are your recommended products ;)</h4>
+      </div>
+      <div class="header">
+        <h4 class="animation a2">Product IDs: {{ asin }}</h4>
+
+      </div>
+    </div>
+  </div>
+</body>
+</html>
